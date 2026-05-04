@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Proyecto 2 - Tienda</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Sistema de Inventario y Ventas</h1>
+    <p>Proyecto 2 - Bases de Datos</p>
+  </header>
+
+  <main>
+    <section class="bloque">
+      <h2>Clientes</h2>
+
+      <form id="formCliente">
+        <input type="text" id="clienteNombre" placeholder="Nombre" required />
+        <input type="text" id="clienteTelefono" placeholder="Teléfono" required />
+        <input type="email" id="clienteCorreo" placeholder="Correo" required />
+        <button type="submit" id="btnCliente">Agregar cliente</button>
+      </form>
+
+      <button onclick="cargarClientes()">Actualizar lista de clientes</button>
+      <div id="clientes"></div>
+    </section>
+
+    <section class="bloque">
+      <h2>Productos</h2>
+
+      <form id="formProducto">
+        <input type="text" id="productoNombre" placeholder="Nombre" required />
+        <input type="text" id="productoDescripcion" placeholder="Descripción" required />
+        <input type="number" step="0.01" id="productoPrecio" placeholder="Precio" required />
+        <input type="number" id="productoStock" placeholder="Stock" required />
+        <input type="number" id="productoCategoria" placeholder="ID Categoría" required />
+        <input type="number" id="productoProveedor" placeholder="ID Proveedor" required />
+        <button type="submit" id="btnProducto">Agregar producto</button>
+        </form>
+
+      <button onclick="cargarProductos()">Actualizar lista de productos</button>
+      <div id="productos"></div>
+    </section>
+
+    <section class="bloque">
+      <h2>Reporte de productos vendidos</h2>
+      <button onclick="cargarReporteProductos()">Cargar reporte</button>
+      <div id="reporteProductos"></div>
+    </section>
+
+    <section class="bloque">
+      <h2>Ventas detalladas</h2>
+      <button onclick="cargarVentasDetalladas()">Cargar ventas detalladas</button>
+      <div id="ventasDetalladas"></div>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
