@@ -69,11 +69,11 @@ func main() {
 
 	fmt.Println("Conexión a PostgreSQL exitosa")
 
-	http.HandleFunc("/", inicioHandler)
-	http.HandleFunc("/productos", productosHandler)
-	http.HandleFunc("/ventas-detalladas", ventasDetalladasHandler)
-	http.HandleFunc("/reporte/productos", reporteProductosHandler)
-	http.HandleFunc("/clientes", clientesHandler)
+	http.HandleFunc("/", enableCORS(inicioHandler))
+	http.HandleFunc("/productos", enableCORS(productosHandler))
+	http.HandleFunc("/ventas-detalladas", enableCORS(ventasDetalladasHandler))
+	http.HandleFunc("/reporte/productos", enableCORS(reporteProductosHandler))
+	http.HandleFunc("/clientes", enableCORS(clientesHandler))
 
 	fmt.Println("Servidor corriendo en http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
@@ -491,4 +491,19 @@ func actualizarCliente(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"mensaje": "Cliente actualizado correctamente",
 	})
+}
+
+func enableCORS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next(w, r)
+	}
 }
