@@ -2,6 +2,35 @@ const API = "http://localhost:8080";
 let clienteEditandoId = null;
 let productoEditandoId = null;
 
+document.getElementById("formVenta").addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const body = {
+    id_cliente: parseInt(document.getElementById("ventaCliente").value),
+    id_empleado: parseInt(document.getElementById("ventaEmpleado").value),
+    id_producto: parseInt(document.getElementById("ventaProducto").value),
+    cantidad: parseInt(document.getElementById("ventaCantidad").value)
+  };
+
+  const res = await fetch(`${API}/ventas`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json().catch(() => null);
+
+  if (res.ok) {
+    alert(`Venta registrada correctamente. ID venta: ${data.id_venta}`);
+    e.target.reset();
+    cargarProductos();
+    cargarReporteProductos();
+    cargarVentasDetalladas();
+  } else {
+    alert(data?.mensaje || data || "Error al registrar venta");
+  }
+});
+
 async function cargarClientes() {
   const res = await fetch(`${API}/clientes`);
   const data = await res.json();

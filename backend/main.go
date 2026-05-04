@@ -48,6 +48,22 @@ type Cliente struct {
 	Correo    string `json:"correo"`
 }
 
+type VentaRequest struct {
+	IDCliente  int `json:"id_cliente"`
+	IDEmpleado int `json:"id_empleado"`
+	IDProducto int `json:"id_producto"`
+	Cantidad   int `json:"cantidad"`
+}
+
+type VentaResponse struct {
+	Mensaje        string  `json:"mensaje"`
+	IDVenta        int     `json:"id_venta"`
+	IDProducto     int     `json:"id_producto"`
+	Cantidad       int     `json:"cantidad"`
+	PrecioUnitario float64 `json:"precio_unitario"`
+	Subtotal       float64 `json:"subtotal"`
+}
+
 func main() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -74,6 +90,7 @@ func main() {
 	http.HandleFunc("/ventas-detalladas", enableCORS(ventasDetalladasHandler))
 	http.HandleFunc("/reporte/productos", enableCORS(reporteProductosHandler))
 	http.HandleFunc("/clientes", enableCORS(clientesHandler))
+	http.HandleFunc("/ventas", enableCORS(ventasHandler))
 
 	fmt.Println("Servidor corriendo en http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
@@ -370,6 +387,105 @@ func clientesHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
 	}
+}
+
+func ventasHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		crearVenta(w, r)
+	default:
+		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+	}
+}
+
+func crearVenta(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	var req VentaRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "JSON inválido: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.IDCliente == 0 || req.IDEmpleado == 0 || req.IDProducto == 0 || req.Cantidad <= 0 {
+		http.Error(w, "Debes enviar id_cliente, id_empleado, id_producto y cantidad válida", http.StatusBadRequest)
+		return
+	}
+
+	ctx := context.Background()
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		http.Error(w, "Error iniciando transacción: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	var precio float64
+	var stock int
+
+	err = tx.QueryRow(ctx, `
+		SELECT precio, stock
+		FROM producto
+		WHERE id_producto = $1
+	`, req.IDProducto).Scan(&precio, &stock)
+	if err != nil {
+		http.Error(w, "Error obteniendo producto: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if stock < req.Cantidad {
+		http.Error(w, "Stock insuficiente", http.StatusBadRequest)
+		return
+	}
+
+	var idVenta int
+	err = tx.QueryRow(ctx, `
+		INSERT INTO venta (fecha, id_cliente, id_empleado)
+		VALUES (NOW(), $1, $2)
+		RETURNING id_venta
+	`, req.IDCliente, req.IDEmpleado).Scan(&idVenta)
+	if err != nil {
+		http.Error(w, "Error creando venta: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO detalle_venta (id_venta, id_producto, cantidad, precio_unitario)
+		VALUES ($1, $2, $3, $4)
+	`, idVenta, req.IDProducto, req.Cantidad, precio)
+	if err != nil {
+		http.Error(w, "Error creando detalle de venta: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE producto
+		SET stock = stock - $1
+		WHERE id_producto = $2
+	`, req.Cantidad, req.IDProducto)
+	if err != nil {
+		http.Error(w, "Error actualizando stock: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = tx.Commit(ctx)
+	if err != nil {
+		http.Error(w, "Error confirmando transacción: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := VentaResponse{
+		Mensaje:        "Venta registrada correctamente",
+		IDVenta:        idVenta,
+		IDProducto:     req.IDProducto,
+		Cantidad:       req.Cantidad,
+		PrecioUnitario: precio,
+		Subtotal:       precio * float64(req.Cantidad),
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func listarClientes(w http.ResponseWriter, r *http.Request) {

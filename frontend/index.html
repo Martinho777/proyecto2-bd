@@ -45,6 +45,18 @@
     </section>
 
     <section class="bloque">
+        <h2>Registrar venta</h2>
+
+        <form id="formVenta">
+            <input type="number" id="ventaCliente" placeholder="ID Cliente" required />
+            <input type="number" id="ventaEmpleado" placeholder="ID Empleado" required />
+            <input type="number" id="ventaProducto" placeholder="ID Producto" required />
+            <input type="number" id="ventaCantidad" placeholder="Cantidad" required />
+            <button type="submit">Registrar venta</button>
+        </form>
+    </section>
+    
+    <section class="bloque">
       <h2>Reporte de productos vendidos</h2>
       <button onclick="cargarReporteProductos()">Cargar reporte</button>
       <div id="reporteProductos"></div>
