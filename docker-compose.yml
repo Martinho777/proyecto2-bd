@@ -12,5 +12,27 @@ services:
       - ./db/schema.sql:/docker-entrypoint-initdb.d/1_schema.sql
       - ./db/seed.sql:/docker-entrypoint-initdb.d/2_seed.sql
 
+  backend:
+    build:
+      context: ./backend
+    container_name: proyecto2_backend
+    restart: always
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://proy2:secret@db:5432/tienda_db?sslmode=disable
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: proyecto2_frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "8081:80"
+
 volumes:
   postgres_data:
