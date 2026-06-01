@@ -10,18 +10,25 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 var db *pgxpool.Pool
+var dbORM *gorm.DB
 
 type Producto struct {
-	IDProducto  int     `json:"id_producto"`
-	Nombre      string  `json:"nombre"`
-	Descripcion string  `json:"descripcion"`
-	Precio      float64 `json:"precio"`
-	Stock       int     `json:"stock"`
-	IDCategoria int     `json:"id_categoria"`
-	IDProveedor int     `json:"id_proveedor"`
+	IDProducto  int     `json:"id_producto" gorm:"column:id_producto;primaryKey;autoIncrement"`
+	Nombre      string  `json:"nombre" gorm:"column:nombre"`
+	Descripcion string  `json:"descripcion" gorm:"column:descripcion"`
+	Precio      float64 `json:"precio" gorm:"column:precio"`
+	Stock       int     `json:"stock" gorm:"column:stock"`
+	IDCategoria int     `json:"id_categoria" gorm:"column:id_categoria"`
+	IDProveedor int     `json:"id_proveedor" gorm:"column:id_proveedor"`
+}
+
+func (Producto) TableName() string {
+	return "producto"
 }
 
 type VentaDetallada struct {
@@ -67,7 +74,7 @@ type VentaResponse struct {
 func main() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://proy2:secret@127.0.0.1:5433/tienda_db?sslmode=disable"
+		dsn = "postgres://proy3:secret@127.0.0.1:5433/tienda_db?sslmode=disable"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -84,6 +91,13 @@ func main() {
 	}
 
 	fmt.Println("Conexión a PostgreSQL exitosa")
+
+	dbORM, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("Error conectando con GORM: %v", err)
+	}
+
+	fmt.Println("Conexión a PostgreSQL con GORM exitosa")
 
 	http.HandleFunc("/", enableCORS(inicioHandler))
 	http.HandleFunc("/productos", enableCORS(productosHandler))
@@ -107,44 +121,12 @@ func inicioHandler(w http.ResponseWriter, r *http.Request) {
 func listarProductos(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	query := `
-		SELECT id_producto, nombre, descripcion, precio, stock, id_categoria, id_proveedor
-		FROM producto
-		ORDER BY id_producto;
-	`
-
-	rows, err := db.Query(context.Background(), query)
-	if err != nil {
-		http.Error(w, "Error consultando productos", http.StatusInternalServerError)
-		log.Println("Error en query de productos:", err)
-		return
-	}
-	defer rows.Close()
-
 	var productos []Producto
 
-	for rows.Next() {
-		var p Producto
-		err := rows.Scan(
-			&p.IDProducto,
-			&p.Nombre,
-			&p.Descripcion,
-			&p.Precio,
-			&p.Stock,
-			&p.IDCategoria,
-			&p.IDProveedor,
-		)
-		if err != nil {
-			http.Error(w, "Error leyendo productos", http.StatusInternalServerError)
-			log.Println("Error escaneando producto:", err)
-			return
-		}
-		productos = append(productos, p)
-	}
-
-	if rows.Err() != nil {
-		http.Error(w, "Error recorriendo productos", http.StatusInternalServerError)
-		log.Println("Error en rows:", rows.Err())
+	err := dbORM.Order("id_producto").Find(&productos).Error
+	if err != nil {
+		http.Error(w, "Error consultando productos con ORM: "+err.Error(), http.StatusInternalServerError)
+		log.Println("Error ORM listando productos:", err)
 		return
 	}
 
@@ -161,25 +143,9 @@ func crearProducto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `
-		INSERT INTO producto (nombre, descripcion, precio, stock, id_categoria, id_proveedor)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id_producto;
-	`
-
-	err = db.QueryRow(
-		context.Background(),
-		query,
-		p.Nombre,
-		p.Descripcion,
-		p.Precio,
-		p.Stock,
-		p.IDCategoria,
-		p.IDProveedor,
-	).Scan(&p.IDProducto)
-
+	err = dbORM.Create(&p).Error
 	if err != nil {
-		http.Error(w, "Error creando producto: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Error creando producto con ORM: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -202,36 +168,29 @@ func actualizarProducto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `
-		UPDATE producto
-		SET nombre = $1, descripcion = $2, precio = $3, stock = $4, id_categoria = $5, id_proveedor = $6
-		WHERE id_producto = $7
-	`
+	resultado := dbORM.Model(&Producto{}).
+		Where("id_producto = ?", p.IDProducto).
+		Updates(map[string]interface{}{
+			"nombre":       p.Nombre,
+			"descripcion":  p.Descripcion,
+			"precio":       p.Precio,
+			"stock":        p.Stock,
+			"id_categoria": p.IDCategoria,
+			"id_proveedor": p.IDProveedor,
+		})
 
-	commandTag, err := db.Exec(
-		context.Background(),
-		query,
-		p.Nombre,
-		p.Descripcion,
-		p.Precio,
-		p.Stock,
-		p.IDCategoria,
-		p.IDProveedor,
-		p.IDProducto,
-	)
-
-	if err != nil {
-		http.Error(w, "Error actualizando producto: "+err.Error(), http.StatusInternalServerError)
+	if resultado.Error != nil {
+		http.Error(w, "Error actualizando producto con ORM: "+resultado.Error.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if commandTag.RowsAffected() == 0 {
+	if resultado.RowsAffected == 0 {
 		http.Error(w, "No se encontró el producto", http.StatusNotFound)
 		return
 	}
 
 	json.NewEncoder(w).Encode(map[string]string{
-		"mensaje": "Producto actualizado correctamente",
+		"mensaje": "Producto actualizado correctamente con ORM",
 	})
 }
 
@@ -244,21 +203,20 @@ func eliminarProducto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `DELETE FROM producto WHERE id_producto = $1`
+	resultado := dbORM.Where("id_producto = ?", id).Delete(&Producto{})
 
-	commandTag, err := db.Exec(context.Background(), query, id)
-	if err != nil {
-		http.Error(w, "Error eliminando producto: "+err.Error(), http.StatusInternalServerError)
+	if resultado.Error != nil {
+		http.Error(w, "Error eliminando producto con ORM: "+resultado.Error.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if commandTag.RowsAffected() == 0 {
+	if resultado.RowsAffected == 0 {
 		http.Error(w, "No se encontró el producto", http.StatusNotFound)
 		return
 	}
 
 	json.NewEncoder(w).Encode(map[string]string{
-		"mensaje": "Producto eliminado correctamente",
+		"mensaje": "Producto eliminado correctamente con ORM",
 	})
 }
 
