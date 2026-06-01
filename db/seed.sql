@@ -123,6 +123,16 @@ INSERT INTO empleado (id_empleado, nombre, puesto, correo) VALUES
 (25, 'Mariana Ochoa', 'Vendedora', 'mariana@tienda.com');
 
 -- =========================
+-- USUARIOS DE APLICACIÓN
+-- =========================
+INSERT INTO app_usuario (nombre, correo, password, rol) VALUES
+('Administrador General', 'admin@tienda.com', 'secret', 'admin'),
+('Gerente de Tienda', 'gerente@tienda.com', 'secret', 'gerente'),
+('Vendedor Principal', 'vendedor@tienda.com', 'secret', 'vendedor'),
+('Encargado de Bodega', 'bodega@tienda.com', 'secret', 'bodega'),
+('Auditor Interno', 'auditor@tienda.com', 'secret', 'auditor');
+
+-- =========================
 -- PRODUCTO
 -- =========================
 INSERT INTO producto (id_producto, nombre, descripcion, precio, stock, id_categoria, id_proveedor) VALUES

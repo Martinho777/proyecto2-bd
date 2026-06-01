@@ -25,6 +25,16 @@ CREATE TABLE empleado (
     correo VARCHAR(100) NOT NULL
 );
 
+CREATE TABLE app_usuario (
+    id_usuario SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    correo VARCHAR(100) UNIQUE NOT NULL,
+    password VARCHAR(100) NOT NULL,
+    rol VARCHAR(30) NOT NULL,
+    CONSTRAINT chk_app_usuario_rol
+        CHECK (rol IN ('admin', 'gerente', 'vendedor', 'bodega', 'auditor'))
+);
+
 CREATE TABLE producto (
     id_producto SERIAL PRIMARY KEY,
     nombre VARCHAR(100) NOT NULL,
