@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,6 +20,9 @@ import (
 
 var db *pgxpool.Pool
 var dbORM *gorm.DB
+
+var sesiones = map[string]Sesion{}
+var sesionesMu sync.RWMutex
 
 type Producto struct {
 	IDProducto  int     `json:"id_producto" gorm:"column:id_producto;primaryKey;autoIncrement"`
@@ -71,6 +78,31 @@ type VentaResponse struct {
 	Subtotal       float64 `json:"subtotal"`
 }
 
+type LoginRequest struct {
+	Correo   string `json:"correo"`
+	Password string `json:"password"`
+}
+
+type UsuarioSesion struct {
+	IDUsuario int    `json:"id_usuario"`
+	Nombre    string `json:"nombre"`
+	Correo    string `json:"correo"`
+	Rol       string `json:"rol"`
+}
+
+type LoginResponse struct {
+	Mensaje string `json:"mensaje"`
+	Token   string `json:"token"`
+	Nombre  string `json:"nombre"`
+	Correo  string `json:"correo"`
+	Rol     string `json:"rol"`
+}
+
+type Sesion struct {
+	Usuario UsuarioSesion
+	Creada  time.Time
+}
+
 func main() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -100,6 +132,11 @@ func main() {
 	fmt.Println("Conexión a PostgreSQL con GORM exitosa")
 
 	http.HandleFunc("/", enableCORS(inicioHandler))
+
+	http.HandleFunc("/login", enableCORS(loginHandler))
+	http.HandleFunc("/logout", enableCORS(logoutHandler))
+	http.HandleFunc("/me", enableCORS(meHandler))
+
 	http.HandleFunc("/productos", enableCORS(productosHandler))
 	http.HandleFunc("/ventas-detalladas", enableCORS(ventasDetalladasHandler))
 	http.HandleFunc("/reporte/productos", enableCORS(reporteProductosHandler))
@@ -116,6 +153,146 @@ func inicioHandler(w http.ResponseWriter, r *http.Request) {
 		"mensaje": "Backend funcionando correctamente",
 	}
 	json.NewEncoder(w).Encode(respuesta)
+}
+
+func generarToken() (string, error) {
+	bytes := make([]byte, 32)
+	_, err := rand.Read(bytes)
+	if err != nil {
+		return "", err
+	}
+
+	return hex.EncodeToString(bytes), nil
+}
+
+func obtenerSesion(r *http.Request) (UsuarioSesion, bool) {
+	auth := r.Header.Get("Authorization")
+
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return UsuarioSesion{}, false
+	}
+
+	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+
+	sesionesMu.RLock()
+	defer sesionesMu.RUnlock()
+
+	sesion, existe := sesiones[token]
+	if !existe {
+		return UsuarioSesion{}, false
+	}
+
+	return sesion.Usuario, true
+}
+
+func exigirRol(w http.ResponseWriter, r *http.Request, rolesPermitidos ...string) bool {
+	usuario, ok := obtenerSesion(r)
+	if !ok {
+		http.Error(w, "Debes iniciar sesión", http.StatusUnauthorized)
+		return false
+	}
+
+	if usuario.Rol == "admin" {
+		return true
+	}
+
+	for _, rol := range rolesPermitidos {
+		if usuario.Rol == rol {
+			return true
+		}
+	}
+
+	http.Error(w, "No tienes permiso para esta operación", http.StatusForbidden)
+	return false
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req LoginRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "JSON inválido: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var usuario UsuarioSesion
+
+	err = db.QueryRow(context.Background(), `
+		SELECT id_usuario, nombre, correo, rol
+		FROM app_usuario
+		WHERE correo = $1 AND password = $2
+	`, req.Correo, req.Password).Scan(
+		&usuario.IDUsuario,
+		&usuario.Nombre,
+		&usuario.Correo,
+		&usuario.Rol,
+	)
+
+	if err != nil {
+		http.Error(w, "Credenciales inválidas", http.StatusUnauthorized)
+		return
+	}
+
+	token, err := generarToken()
+	if err != nil {
+		http.Error(w, "Error generando sesión", http.StatusInternalServerError)
+		return
+	}
+
+	sesionesMu.Lock()
+	sesiones[token] = Sesion{
+		Usuario: usuario,
+		Creada:  time.Now(),
+	}
+	sesionesMu.Unlock()
+
+	json.NewEncoder(w).Encode(LoginResponse{
+		Mensaje: "Login correcto",
+		Token:   token,
+		Nombre:  usuario.Nombre,
+		Correo:  usuario.Correo,
+		Rol:     usuario.Rol,
+	})
+}
+
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+		return
+	}
+
+	auth := r.Header.Get("Authorization")
+	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+
+	if token != "" {
+		sesionesMu.Lock()
+		delete(sesiones, token)
+		sesionesMu.Unlock()
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"mensaje": "Logout correcto",
+	})
+}
+
+func meHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	usuario, ok := obtenerSesion(r)
+	if !ok {
+		http.Error(w, "No hay sesión activa", http.StatusUnauthorized)
+		return
+	}
+
+	json.NewEncoder(w).Encode(usuario)
 }
 
 func listarProductos(w http.ResponseWriter, r *http.Request) {
@@ -223,13 +400,29 @@ func eliminarProducto(w http.ResponseWriter, r *http.Request) {
 func productosHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if !exigirRol(w, r, "gerente", "vendedor", "bodega", "auditor") {
+			return
+		}
 		listarProductos(w, r)
+
 	case http.MethodPost:
+		if !exigirRol(w, r, "bodega") {
+			return
+		}
 		crearProducto(w, r)
+
 	case http.MethodPut:
+		if !exigirRol(w, r, "bodega") {
+			return
+		}
 		actualizarProducto(w, r)
+
 	case http.MethodDelete:
+		if !exigirRol(w, r, "bodega") {
+			return
+		}
 		eliminarProducto(w, r)
+
 	default:
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
 	}
@@ -237,6 +430,10 @@ func productosHandler(w http.ResponseWriter, r *http.Request) {
 
 func ventasDetalladasHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	if !exigirRol(w, r, "gerente", "auditor") {
+		return
+	}
 
 	query := `
 		SELECT id_venta, fecha, cliente, empleado, producto, cantidad, precio_unitario, subtotal
@@ -285,6 +482,10 @@ func ventasDetalladasHandler(w http.ResponseWriter, r *http.Request) {
 
 func reporteProductosHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	if !exigirRol(w, r, "gerente", "auditor") {
+		return
+	}
 
 	query := `
 		SELECT 
@@ -335,13 +536,29 @@ func reporteProductosHandler(w http.ResponseWriter, r *http.Request) {
 func clientesHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if !exigirRol(w, r, "gerente", "vendedor", "auditor") {
+			return
+		}
 		listarClientes(w, r)
+
 	case http.MethodPost:
+		if !exigirRol(w, r, "vendedor") {
+			return
+		}
 		crearCliente(w, r)
+
 	case http.MethodPut:
+		if !exigirRol(w, r, "vendedor") {
+			return
+		}
 		actualizarCliente(w, r)
+
 	case http.MethodDelete:
+		if !exigirRol(w, r, "vendedor") {
+			return
+		}
 		eliminarCliente(w, r)
+
 	default:
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
 	}
@@ -350,7 +567,11 @@ func clientesHandler(w http.ResponseWriter, r *http.Request) {
 func ventasHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
+		if !exigirRol(w, r, "vendedor") {
+			return
+		}
 		crearVenta(w, r)
+
 	default:
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
 	}
@@ -571,7 +792,7 @@ func enableCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
