@@ -1,7 +1,7 @@
 services:
   db:
     image: postgres:16
-    container_name: proyecto2_db
+    container_name: proyecto3_db
     restart: always
     env_file:
       - .env
@@ -15,19 +15,19 @@ services:
   backend:
     build:
       context: ./backend
-    container_name: proyecto2_backend
+    container_name: proyecto3_backend
     restart: always
     depends_on:
       - db
     environment:
-      DATABASE_URL: postgres://proy2:secret@db:5432/tienda_db?sslmode=disable
+      DATABASE_URL: postgres://proy3:secret@db:5432/tienda_db?sslmode=disable
     ports:
       - "8080:8080"
 
   frontend:
     build:
       context: ./frontend
-    container_name: proyecto2_frontend
+    container_name: proyecto3_frontend
     restart: always
     depends_on:
       - backend
