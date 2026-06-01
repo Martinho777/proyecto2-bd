@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -435,16 +436,24 @@ func ventasDetalladasHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `
-		SELECT id_venta, fecha, cliente, empleado, producto, cantidad, precio_unitario, subtotal
-		FROM vista_ventas_detalladas
-		ORDER BY id_venta, producto;
-	`
+	ctx := context.Background()
 
-	rows, err := db.Query(context.Background(), query)
+	tx, err := db.Begin(ctx)
 	if err != nil {
-		http.Error(w, "Error consultando ventas detalladas", http.StatusInternalServerError)
-		log.Println("Error en query de ventas detalladas:", err)
+		http.Error(w, "Error iniciando transacción para ventas detalladas: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `CALL sp_ventas_detalladas('cursor_ventas_detalladas')`)
+	if err != nil {
+		http.Error(w, "Error ejecutando stored procedure de ventas detalladas: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rows, err := tx.Query(ctx, `FETCH ALL FROM cursor_ventas_detalladas`)
+	if err != nil {
+		http.Error(w, "Error leyendo cursor de ventas detalladas: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -453,6 +462,7 @@ func ventasDetalladasHandler(w http.ResponseWriter, r *http.Request) {
 
 	for rows.Next() {
 		var v VentaDetallada
+
 		err := rows.Scan(
 			&v.IDVenta,
 			&v.Fecha,
@@ -463,17 +473,23 @@ func ventasDetalladasHandler(w http.ResponseWriter, r *http.Request) {
 			&v.PrecioUnitario,
 			&v.Subtotal,
 		)
+
 		if err != nil {
-			http.Error(w, "Error leyendo ventas detalladas", http.StatusInternalServerError)
-			log.Println("Error escaneando venta detallada:", err)
+			http.Error(w, "Error leyendo ventas detalladas: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+
 		ventas = append(ventas, v)
 	}
 
 	if rows.Err() != nil {
-		http.Error(w, "Error recorriendo ventas detalladas", http.StatusInternalServerError)
-		log.Println("Error en rows:", rows.Err())
+		http.Error(w, "Error recorriendo ventas detalladas: "+rows.Err().Error(), http.StatusInternalServerError)
+		return
+	}
+
+	err = tx.Commit(ctx)
+	if err != nil {
+		http.Error(w, "Error confirmando transacción de ventas detalladas: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -487,22 +503,24 @@ func reporteProductosHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `
-		SELECT 
-			p.nombre AS producto,
-			SUM(dv.cantidad) AS total_unidades_vendidas,
-			SUM(dv.cantidad * dv.precio_unitario) AS total_ingresos
-		FROM detalle_venta dv
-		JOIN producto p ON dv.id_producto = p.id_producto
-		GROUP BY p.nombre
-		HAVING SUM(dv.cantidad) > 1
-		ORDER BY total_unidades_vendidas DESC, producto;
-	`
+	ctx := context.Background()
 
-	rows, err := db.Query(context.Background(), query)
+	tx, err := db.Begin(ctx)
 	if err != nil {
-		http.Error(w, "Error consultando reporte de productos: "+err.Error(), http.StatusInternalServerError)
-		log.Println("Error en query de reporte de productos:", err)
+		http.Error(w, "Error iniciando transacción para reporte: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `CALL sp_reporte_productos('cursor_reporte_productos')`)
+	if err != nil {
+		http.Error(w, "Error ejecutando stored procedure de reporte: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rows, err := tx.Query(ctx, `FETCH ALL FROM cursor_reporte_productos`)
+	if err != nil {
+		http.Error(w, "Error leyendo cursor de reporte: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -511,22 +529,29 @@ func reporteProductosHandler(w http.ResponseWriter, r *http.Request) {
 
 	for rows.Next() {
 		var rp ReporteProducto
+
 		err := rows.Scan(
 			&rp.Producto,
 			&rp.TotalUnidadesVendidas,
 			&rp.TotalIngresos,
 		)
+
 		if err != nil {
 			http.Error(w, "Error leyendo reporte de productos: "+err.Error(), http.StatusInternalServerError)
-			log.Println("Error escaneando reporte de productos:", err)
 			return
 		}
+
 		reporte = append(reporte, rp)
 	}
 
 	if rows.Err() != nil {
 		http.Error(w, "Error recorriendo reporte de productos: "+rows.Err().Error(), http.StatusInternalServerError)
-		log.Println("Error en rows:", rows.Err())
+		return
+	}
+
+	err = tx.Commit(ctx)
+	if err != nil {
+		http.Error(w, "Error confirmando transacción de reporte: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -592,75 +617,30 @@ func crearVenta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.Background()
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		http.Error(w, "Error iniciando transacción: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer tx.Rollback(ctx)
-
-	var precio float64
-	var stock int
-
-	err = tx.QueryRow(ctx, `
-		SELECT precio, stock
-		FROM producto
-		WHERE id_producto = $1
-	`, req.IDProducto).Scan(&precio, &stock)
-	if err != nil {
-		http.Error(w, "Error obteniendo producto: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if stock < req.Cantidad {
-		http.Error(w, "Stock insuficiente", http.StatusBadRequest)
-		return
-	}
-
 	var idVenta int
-	err = tx.QueryRow(ctx, `
-		INSERT INTO venta (fecha, id_cliente, id_empleado)
-		VALUES (NOW(), $1, $2)
-		RETURNING id_venta
-	`, req.IDCliente, req.IDEmpleado).Scan(&idVenta)
-	if err != nil {
-		http.Error(w, "Error creando venta: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	var precioUnitario float64
+	var subtotal float64
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO detalle_venta (id_venta, id_producto, cantidad, precio_unitario)
-		VALUES ($1, $2, $3, $4)
-	`, idVenta, req.IDProducto, req.Cantidad, precio)
-	if err != nil {
-		http.Error(w, "Error creando detalle de venta: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	err = db.QueryRow(context.Background(), `
+		CALL sp_registrar_venta($1, $2, $3, $4, NULL, NULL, NULL)
+	`, req.IDCliente, req.IDEmpleado, req.IDProducto, req.Cantidad).Scan(
+		&idVenta,
+		&precioUnitario,
+		&subtotal,
+	)
 
-	_, err = tx.Exec(ctx, `
-		UPDATE producto
-		SET stock = stock - $1
-		WHERE id_producto = $2
-	`, req.Cantidad, req.IDProducto)
 	if err != nil {
-		http.Error(w, "Error actualizando stock: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	err = tx.Commit(ctx)
-	if err != nil {
-		http.Error(w, "Error confirmando transacción: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Error registrando venta con stored procedure: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	resp := VentaResponse{
-		Mensaje:        "Venta registrada correctamente",
+		Mensaje:        "Venta registrada correctamente con stored procedure",
 		IDVenta:        idVenta,
 		IDProducto:     req.IDProducto,
 		Cantidad:       req.Cantidad,
-		PrecioUnitario: precio,
-		Subtotal:       precio * float64(req.Cantidad),
+		PrecioUnitario: precioUnitario,
+		Subtotal:       subtotal,
 	}
 
 	w.WriteHeader(http.StatusCreated)
@@ -708,15 +688,12 @@ func crearCliente(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `
-		INSERT INTO cliente (nombre, telefono, correo)
-		VALUES ($1, $2, $3)
-		RETURNING id_cliente;
-	`
+	err = db.QueryRow(context.Background(), `
+		CALL sp_crear_cliente($1, $2, $3, NULL)
+	`, c.Nombre, c.Telefono, c.Correo).Scan(&c.IDCliente)
 
-	err = db.QueryRow(context.Background(), query, c.Nombre, c.Telefono, c.Correo).Scan(&c.IDCliente)
 	if err != nil {
-		http.Error(w, "Error creando cliente: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Error creando cliente con stored procedure: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -727,27 +704,32 @@ func crearCliente(w http.ResponseWriter, r *http.Request) {
 func eliminarCliente(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	id := r.URL.Query().Get("id")
-	if id == "" {
+	idTexto := r.URL.Query().Get("id")
+	if idTexto == "" {
 		http.Error(w, "Debes enviar el id del cliente", http.StatusBadRequest)
 		return
 	}
 
-	query := `DELETE FROM cliente WHERE id_cliente = $1`
-
-	commandTag, err := db.Exec(context.Background(), query, id)
+	idCliente, err := strconv.Atoi(idTexto)
 	if err != nil {
-		http.Error(w, "Error eliminando cliente: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "El id del cliente debe ser numérico", http.StatusBadRequest)
 		return
 	}
 
-	if commandTag.RowsAffected() == 0 {
-		http.Error(w, "No se encontró el cliente", http.StatusNotFound)
+	var filasAfectadas int
+
+	err = db.QueryRow(context.Background(), `
+		CALL sp_eliminar_cliente($1, NULL)
+	`, idCliente).Scan(&filasAfectadas)
+
+	if err != nil {
+		http.Error(w, "Error eliminando cliente con stored procedure: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{
-		"mensaje": "Cliente eliminado correctamente",
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"mensaje":          "Cliente eliminado correctamente con stored procedure",
+		"filas_afectadas":  filasAfectadas,
 	})
 }
 
@@ -766,25 +748,20 @@ func actualizarCliente(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `
-		UPDATE cliente
-		SET nombre = $1, telefono = $2, correo = $3
-		WHERE id_cliente = $4
-	`
+	var filasAfectadas int
 
-	commandTag, err := db.Exec(context.Background(), query, c.Nombre, c.Telefono, c.Correo, c.IDCliente)
+	err = db.QueryRow(context.Background(), `
+		CALL sp_actualizar_cliente($1, $2, $3, $4, NULL)
+	`, c.IDCliente, c.Nombre, c.Telefono, c.Correo).Scan(&filasAfectadas)
+
 	if err != nil {
-		http.Error(w, "Error actualizando cliente: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Error actualizando cliente con stored procedure: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if commandTag.RowsAffected() == 0 {
-		http.Error(w, "No se encontró el cliente", http.StatusNotFound)
-		return
-	}
-
-	json.NewEncoder(w).Encode(map[string]string{
-		"mensaje": "Cliente actualizado correctamente",
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"mensaje":          "Cliente actualizado correctamente con stored procedure",
+		"filas_afectadas":  filasAfectadas,
 	})
 }
 
